@@ -76,96 +76,53 @@ class FilterSelector(FeatureSelector):
         self.min_effect_size = min_effect_size
 
     def select(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Vybere priznaky, ktere obe skupiny oddeluji vyznamne i podstatne.
-
-        Algoritmus (pro kazdy priznak ``j`` samostatne):
-
-        1. Rozdel hodnoty sloupce ``x[:, j]`` na dve skupiny podle ``y``:
-           ``a = x[y == 0, j]`` a ``b = x[y == 1, j]``.
-        2. Otestuj normalitu obou skupin pomoci ``scipy.stats.shapiro``.
-        3. Vyber test:
-             - pokud OBE skupiny vypadaji normalne
-               (``p_shapiro > self.alpha`` u obou), pouzij parametricky
-               ``scipy.stats.ttest_ind``;
-             - jinak pouzij neparametricky ``scipy.stats.mannwhitneyu``.
-           Z testu si vezmi p-hodnotu ``p``.
-        4. Spocitej velikost ucinku (Cohenovo ``d``) pomoci pripraveneho
-           pomocneho ``self._cohens_d(a, b)``.
-        5. Priznak PONECHEJ prave tehdy, kdyz
-           ``p < self.alpha`` A ZAROVEN ``abs(d) >= self.min_effect_size``.
-
-        Vrat indexy ponechanych priznaku jako ``np.ndarray`` typu int
-        (napr. ``np.array([0, 3, 4])``); pokud neprojde zadny priznak,
-        vrat prazdne pole ``np.array([], dtype=int)``.
-
-        Proc DVE kriteria, ne jen p-hodnota
-        -----------------------------------
-        Mala p-hodnota rika, ze pozorovany rozdil mezi skupinami je
-        *nepravdepodobne dilem nahody* — ale nerika NIC o tom, jak je ten
-        rozdil VELKY. Pri dostatecne velkem poctu vzorku vyjde jako
-        "statisticky vyznamny" i zcela trivialni, prakticky bezvyznamny
-        rozdil. Velikost ucinku (Cohenovo ``d``) meri prave tuto magnitudu
-        a chrani nas pred ponechanim priznaku, ktery skupiny oddeluje jen
-        zanedbatelne. Toto dvojkriterium (vyznamnost A velikost ucinku) je
-        pojmovym jadrem cele filtrovaci casti.
-
-        Parameters
-        ----------
-        x:
-            Matice priznaku tvaru ``(n_samples, n_features)``.
-        y:
-            Binarni cilovy vektor delky ``n_samples`` (hodnoty 0 a 1).
-
-        Returns
-        -------
-        np.ndarray
-            Celociselne indexy ponechanych priznaku.
-        """
-        # assert  Ověřte, že X je 2D pole (X.ndim == 2)
-        # assert  Ověřte, že len(y) == X.shape[0]
-        # assert  Ověřte, že y je binarni (mnozina hodnot je podmnozinou {0, 1})
-        raise NotImplementedError(
-            "Úkol: implementujte filtrovaci vyber priznaku dvojkriteriem "
-            "vyznamnost (p < alpha) A velikost ucinku (|d| >= min_effect_size); "
-            "viz docstring."
+        """Vybere priznaky, ktere obe skupiny oddeluji vyznamne i podstatne."""
+        assert isinstance(x, np.ndarray) and x.ndim == 2, "X musí být 2D numpy pole"
+        assert isinstance(y, np.ndarray) and len(y) == x.shape[0], (
+            "Délka y musí odpovídat počtu vzorků v X"
         )
+        unique_y = np.unique(y)
+        assert np.isin(unique_y, [0, 1]).all(), "y musí být binární (obsahovat pouze 0 a 1)"
+
+        selected_features: list[int] = []
+        n_features = x.shape[1]
+
+        for j in range(n_features):
+            a = x[y == 0, j]
+            b = x[y == 1, j]
+
+            # 2. Test normality Shapiro-Wilk pro obě skupiny
+            _, p_shapiro_a = stats.shapiro(a)
+            _, p_shapiro_b = stats.shapiro(b)
+
+            # 3. Výběr testu (parametrický vs. neparametrický)
+            if p_shapiro_a > self.alpha and p_shapiro_b > self.alpha:
+                _, p = stats.ttest_ind(a, b)
+            else:
+                _, p = stats.mannwhitneyu(a, b)
+
+            # 4. Výpočet velikosti účinku (Cohenovo d)
+            d = self._cohens_d(a, b)
+
+            # 5. Podmínka zachování příznaku
+            if p < self.alpha and abs(d) >= self.min_effect_size:
+                selected_features.append(j)
+
+        return np.array(selected_features, dtype=int)
 
     def _cohens_d(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Vrati Cohenovo ``d`` — velikost ucinku pro dva nezavisle vybery.
-
-        Definice: ``d = (mean(a) - mean(b)) / pooled_std``, kde ``pooled_std``
-        je sdruzena (pooled) smerodatna odchylka
-
-            ``pooled_std = sqrt(((n1 - 1) * var(a) + (n2 - 1) * var(b))
-                                / (n1 + n2 - 2))``
-
-        s vyberovymi rozptyly ``var`` pocitanymi s ``ddof=1``.
-
-        Tento pomocny je zamerne pripraven, aby ses mohl(a) soustredit na
-        napojeni obou kriterii ve ``select``, ne na odvozovani vzorce.
-
-        Parameters
-        ----------
-        a:
-            Hodnoty prvni skupiny (1D pole).
-        b:
-            Hodnoty druhe skupiny (1D pole).
-
-        Returns
-        -------
-        float
-            Hodnota ``d``. Kladna, pokud ma ``a`` vyssi prumer nez ``b``;
-            velka absolutni hodnota znaci vyrazne oddelene skupiny,
-            hodnota blizka nule znaci prekryvajici se skupiny.
-        """
+        """Vrati Cohenovo ``d`` — velikost ucinku pro dva nezavisle vybery."""
         a = np.asarray(a, dtype=float)
         b = np.asarray(b, dtype=float)
         n1 = a.size
         n2 = b.size
-        pooled_var = (
-            (n1 - 1) * a.var(ddof=1) + (n2 - 1) * b.var(ddof=1)
-        ) / (n1 + n2 - 2)
+
+        pooled_var = ((n1 - 1) * a.var(ddof=1) + (n2 - 1) * b.var(ddof=1)) / (n1 + n2 - 2)
         pooled_std = float(np.sqrt(pooled_var))
+
+        if pooled_std == 0:
+            return 0.0
+
         return float((a.mean() - b.mean()) / pooled_std)
 
 
@@ -191,29 +148,7 @@ class WrapperSelector(FeatureSelector, ABC):
         self.target = target
 
     def select(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Hladove pridava priznaky, dokud skore nedosahne ``self.target``.
-
-        Pro ``i`` od 1 do ``n_features`` vezme prvnich ``i`` sloupcu
-        ``x[:, :i]``, spocita ``score = self._score(x[:, :i], y)`` a jakmile
-        ``score >= self.target``, vrati ``np.arange(i)``. Pokud cile nikdy
-        nedosahne, vrati vsechny indexy ``np.arange(n_features)``.
-
-        Smycka je spolecna vsem potomkum; meni se pouze ``_score``
-        (Template Method).
-
-        Parameters
-        ----------
-        x:
-            Matice priznaku tvaru ``(n_samples, n_features)``.
-        y:
-            Binarni cilovy vektor delky ``n_samples``.
-
-        Returns
-        -------
-        np.ndarray
-            Souvisly prefix indexu ``np.arange(i)`` (pripadne vsechny
-            indexy, neni-li cile dosazeno).
-        """
+        """Hladove pridava priznaky, dokud skore nedosahne ``self.target``."""
         x = np.asarray(x, dtype=np.float64)
         y = np.asarray(y)
         n_features = x.shape[1]
@@ -225,20 +160,7 @@ class WrapperSelector(FeatureSelector, ABC):
 
     @abstractmethod
     def _score(self, x_subset: np.ndarray, y: np.ndarray) -> float:
-        """Vrati skore podmnoziny priznaku ``X_subset`` (vetsi = lepsi).
-
-        Parameters
-        ----------
-        x_subset:
-            Podmnozina sloupcu ``x`` tvaru ``(n_samples, i)``.
-        y:
-            Binarni cilovy vektor delky ``n_samples``.
-
-        Returns
-        -------
-        float
-            Skore, ktere smycka ``select`` porovnava s ``self.target``.
-        """
+        """Vrati skore podmnoziny priznaku ``X_subset`` (vetsi = lepsi)."""
 
 
 class SilhouetteWrapperSelector(WrapperSelector):
@@ -249,10 +171,10 @@ class SilhouetteWrapperSelector(WrapperSelector):
     """
 
     def __init__(
-        self,
-        target: float,
-        n_clusters: int = 2,
-        random_state: int = 0,
+            self,
+            target: float,
+            n_clusters: int = 2,
+            random_state: int = 0,
     ) -> None:
         """Inicializuje selektor.
 
@@ -270,55 +192,38 @@ class SilhouetteWrapperSelector(WrapperSelector):
         self.random_state = random_state
 
     def _score(self, x_subset: np.ndarray, y: np.ndarray) -> float:
-        """Vrati siluetu k-means shlukovani na ``x_subset``.
-
-        Postup:
-
-        1. Nafituj ``sklearn.cluster.KMeans(n_clusters=self.n_clusters,
-           random_state=self.random_state, n_init=10)`` na ``x_subset``.
-        2. Vrat ``sklearn.metrics.silhouette_score(x_subset, labels)``,
-           kde ``labels`` jsou prirazeni shluku z bodu 1.
-
-        Knihovni volani jsou zde zamerna: siluetu jsme implementovali
-        v cv3, tezistem cv5 je vyber priznaku, ne re-derivace siluety.
-        ``y`` se ve skore NEPOUZIVA (kriterium je bez ucitele) — je v podpisu
-        jen kvuli spolecnemu rozhrani.
-
-        Parameters
-        ----------
-        x_subset:
-            Podmnozina sloupcu ``x`` tvaru ``(n_samples, i)``.
-        y:
-            Binarni cilovy vektor (zde nevyuzity).
-
-        Returns
-        -------
-        float
-            Prumerna silueta (v intervalu ``[-1, 1]``).
-        """
-        # assert  Ověřte, že X_subset je 2D pole (X_subset.ndim == 2)
-        # assert  Ověřte, že X_subset.shape[0] > self.n_clusters
-        raise NotImplementedError(
-            "Úkol: implementujte siluetove skore — nafitujte KMeans na "
-            "X_subset a vratte silhouette_score(X_subset, labels); "
-            "viz docstring."
+        """Vrati siluetu k-means shlukovani na ``x_subset``."""
+        assert isinstance(x_subset, np.ndarray) and x_subset.ndim == 2, (
+            "X_subset musí být 2D numpy pole"
         )
+        assert x_subset.shape[0] > self.n_clusters, (
+            f"Počet vzorků ({x_subset.shape[0]}) musí být větší než počet shluků ({self.n_clusters})"
+        )
+
+        kmeans = KMeans(
+            n_clusters=self.n_clusters,
+            random_state=self.random_state,
+            n_init=10,
+        )
+        labels = kmeans.fit_predict(x_subset)
+
+        return float(silhouette_score(x_subset, labels))
 
 
 class KNNWrapperSelector(WrapperSelector):
     """Wrapper skorujici podmnozinu priznaku testovaci presnosti kNN.
 
     Kriterium s ucitelem (supervised): dobra podmnozina priznaku je ta, na
-    ktere klasifikator k nejblizsich sousedu dobre predpovida diagnozu
+    ktete klasifikator k nejblizsich sousedu dobre predpovida diagnozu
     ``y`` na oddelenych testovacich datech.
     """
 
     def __init__(
-        self,
-        target: float,
-        n_neighbors: int = 3,
-        test_size: float = 0.2,
-        random_state: int = 0,
+            self,
+            target: float,
+            n_neighbors: int = 3,
+            test_size: float = 0.2,
+            random_state: int = 0,
     ) -> None:
         """Inicializuje selektor.
 
@@ -339,38 +244,98 @@ class KNNWrapperSelector(WrapperSelector):
         self.random_state = random_state
 
     def _score(self, x_subset: np.ndarray, y: np.ndarray) -> float:
-        """Vrati testovaci presnost kNN klasifikatoru na ``x_subset``.
-
-        Postup:
-
-        1. Rozdel data:
-           ``X_tr, X_te, y_tr, y_te = sklearn.model_selection.train_test_split(
-               x_subset, y, test_size=self.test_size,
-               random_state=self.random_state, stratify=y)``.
-        2. Nafituj ``sklearn.neighbors.KNeighborsClassifier(
-           n_neighbors=self.n_neighbors)`` na ``X_tr, y_tr``.
-        3. Vrat testovaci presnost ``clf.score(X_te, y_te)``.
-
-        Knihovni volani jsou zde zamerna — tezistem cv5 je vyber priznaku,
-        ne implementace kNN.
-
-        Parameters
-        ----------
-        x_subset:
-            Podmnozina sloupcu ``x`` tvaru ``(n_samples, i)``.
-        y:
-            Binarni cilovy vektor delky ``n_samples``.
-
-        Returns
-        -------
-        float
-            Podil spravne klasifikovanych testovacich vzorku (``[0, 1]``).
-        """
-        # assert  Ověřte, že X_subset je 2D pole (X_subset.ndim == 2)
-        # assert  Ověřte, že len(y) == X_subset.shape[0]
-        # assert  Ověřte, že y obsahuje aspon 2 tridy
-        raise NotImplementedError(
-            "Úkol: implementujte skore jako testovaci presnost kNN — "
-            "train_test_split, fit KNeighborsClassifier, vratte clf.score; "
-            "viz docstring."
+        """Vrati testovaci presnost kNN klasifikatoru na ``x_subset``."""
+        assert isinstance(x_subset, np.ndarray) and x_subset.ndim == 2, (
+            "X_subset musí být 2D numpy pole"
         )
+        assert len(y) == x_subset.shape[0], (
+            "Délka y musí odpovídat počtu vzorků v X_subset"
+        )
+        assert len(np.unique(y)) >= 2, "y musí obsahovat alespoň 2 třídy"
+
+        x_tr, x_te, y_tr, y_te = train_test_split(
+            x_subset,
+            y,
+            test_size=self.test_size,
+            random_state=self.random_state,
+            stratify=y,
+        )
+
+        clf = KNeighborsClassifier(n_neighbors=self.n_neighbors)
+        clf.fit(x_tr, y_tr)
+
+        return float(clf.score(x_te, y_te))
+
+    class SilhouetteWrapperSelector(WrapperSelector):
+        """Wrapper skorujici podmnozinu priznaku siluetou k-means shlukovani."""
+
+        def __init__(
+                self,
+                target: float,
+                n_clusters: int = 2,
+                random_state: int = 0,
+        ) -> None:
+            super().__init__(target)
+            self.n_clusters = n_clusters
+            self.random_state = random_state
+
+        def _score(self, x_subset: np.ndarray, y: np.ndarray) -> float:
+            """Vrati siluetu k-means shlukovani na ``x_subset``."""
+            assert isinstance(x_subset, np.ndarray) and x_subset.ndim == 2, (
+                "X_subset musí být 2D numpy pole."
+            )
+            assert x_subset.shape[0] > self.n_clusters, (
+                f"Počet vzorků ({x_subset.shape[0]}) musí být větší než počet shluků ({self.n_clusters})."
+            )
+
+            # 1. Fit KMeans
+            kmeans = KMeans(
+                n_clusters=self.n_clusters,
+                random_state=self.random_state,
+                n_init=10,
+            )
+            labels = kmeans.fit_predict(x_subset)
+
+            # 2. Výpočet a vrácení silhouette_score (y se nepoužívá)
+            return float(silhouette_score(x_subset, labels))
+
+    class KNNWrapperSelector(WrapperSelector):
+        """Wrapper skorujici podmnozinu priznaku testovaci presnosti kNN."""
+
+        def __init__(
+                self,
+                target: float,
+                n_neighbors: int = 3,
+                test_size: float = 0.2,
+                random_state: int = 0,
+        ) -> None:
+            super().__init__(target)
+            self.n_neighbors = n_neighbors
+            self.test_size = test_size
+            self.random_state = random_state
+
+        def _score(self, x_subset: np.ndarray, y: np.ndarray) -> float:
+            """Vrati testovaci presnost kNN klasifikatoru na ``x_subset``."""
+            assert isinstance(x_subset, np.ndarray) and x_subset.ndim == 2, (
+                "X_subset musí být 2D numpy pole."
+            )
+            assert len(y) == x_subset.shape[0], (
+                "Délka vektoru y musí odpovídat počtu řádků v X_subset."
+            )
+            assert len(np.unique(y)) >= 2, "Cílový vektor y musí obsahovat alespoň 2 třídy."
+
+            # 1. Rozdělení na trénovací a testovací množinu se stratifikací
+            x_tr, x_te, y_tr, y_te = train_test_split(
+                x_subset,
+                y,
+                test_size=self.test_size,
+                random_state=self.random_state,
+                stratify=y,
+            )
+
+            # 2. Trénování kNN klasifikátoru
+            clf = KNeighborsClassifier(n_neighbors=self.n_neighbors)
+            clf.fit(x_tr, y_tr)
+
+            # 3. Testovací přesnost
+            return float(clf.score(x_te, y_te))
